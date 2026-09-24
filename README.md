@@ -14,6 +14,8 @@ npm start
 
 Le service écoute par défaut sur `http://localhost:3102`. `GET /health` permet de vérifier son état.
 
+Instance VPS sans DNS : `https://45.9.188.69:8446/health`.
+
 Pour tester sans compte SMTP, Docker Compose démarre aussi Mailpit :
 
 ```sh
