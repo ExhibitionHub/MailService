@@ -24,6 +24,16 @@ docker compose up --build
 - boîte de réception Mailpit : `http://localhost:8025`
 - clé API locale : `local-development-key`
 
+Le port Node et Mailpit sont liés uniquement à `127.0.0.1`. En production sans DNS, le profil `tls` peut publier directement l'IP avec un certificat IP valide :
+
+```env
+NODE_ENV=production
+HOST_PORT=4182
+COMPOSE_PROFILES=tls
+TLS_PORT=8446
+TLS_CERT_ROOT=/etc/letsencrypt
+```
+
 ## Envoyer un email
 
 ```sh

@@ -1,27 +1,88 @@
+name: eh-mailservice
+
 services:
   mail-service:
     build: .
     restart: unless-stopped
+    init: true
+    read_only: true
     ports:
-      - "3102:3102"
+      - "127.0.0.1:${HOST_PORT:-3102}:3102"
     environment:
       PORT: 3102
-      SMTP_HOST: mailpit
-      SMTP_PORT: 1025
-      SMTP_SECURE: "false"
-      SMTP_REJECT_UNAUTHORIZED: "false"
-      MAIL_FROM: no-reply@example.local
-      MAIL_FROM_NAME: Exhibition Hub
+      NODE_ENV: ${NODE_ENV:-development}
+      SMTP_HOST: ${SMTP_HOST:-mailpit}
+      SMTP_PORT: ${SMTP_PORT:-1025}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+      SMTP_REQUIRE_TLS: ${SMTP_REQUIRE_TLS:-false}
+      SMTP_REJECT_UNAUTHORIZED: ${SMTP_REJECT_UNAUTHORIZED:-true}
+      SMTP_POOL_CONNECTIONS: ${SMTP_POOL_CONNECTIONS:-10}
+      SMTP_CONNECTION_TIMEOUT_MS: ${SMTP_CONNECTION_TIMEOUT_MS:-10000}
+      SMTP_SOCKET_TIMEOUT_MS: ${SMTP_SOCKET_TIMEOUT_MS:-20000}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      MAIL_FROM: ${MAIL_FROM:-no-reply@example.local}
+      MAIL_FROM_NAME: ${MAIL_FROM_NAME:-Exhibition Hub}
       MAIL_API_KEY: ${MAIL_API_KEY:-local-development-key}
+      MAIL_API_KEYS: ${MAIL_API_KEYS:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-*}
-      TRUST_PROXY_HOPS: ${TRUST_PROXY_HOPS:-0}
+      MAX_ATTACHMENT_BYTES: ${MAX_ATTACHMENT_BYTES:-10485760}
+      MAX_RECIPIENTS: ${MAX_RECIPIENTS:-10}
+      RATE_LIMIT_WINDOW_MS: ${RATE_LIMIT_WINDOW_MS:-60000}
+      MAIL_RATE_LIMIT: ${MAIL_RATE_LIMIT:-120}
       MAX_CONCURRENT_SENDS: ${MAX_CONCURRENT_SENDS:-10}
       MAX_QUEUED_SENDS: ${MAX_QUEUED_SENDS:-200}
-    depends_on:
-      - mailpit
+      SEND_QUEUE_TIMEOUT_MS: ${SEND_QUEUE_TIMEOUT_MS:-5000}
+      TRUST_PROXY_HOPS: ${TRUST_PROXY_HOPS:-0}
+      REQUEST_TIMEOUT_MS: ${REQUEST_TIMEOUT_MS:-30000}
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3102/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   mailpit:
     image: axllent/mailpit:v1.27
     restart: unless-stopped
     ports:
-      - "8025:8025"
+      - "127.0.0.1:8025:8025"
+
+  tls:
+    image: nginx:1.27-alpine
+    profiles: ["tls"]
+    restart: unless-stopped
+    read_only: true
+    depends_on:
+      mail-service:
+        condition: service_healthy
+    ports:
+      - "${TLS_PORT:-8446}:443"
+    volumes:
+      - ./deploy/tls-proxy.conf:/etc/nginx/conf.d/default.conf:ro
+      - ${TLS_CERT_ROOT:-./deploy/certs}:/etc/letsencrypt:ro
+    tmpfs:
+      - /var/cache/nginx
+      - /var/run
+      - /tmp
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "--no-check-certificate", "https://127.0.0.1/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
