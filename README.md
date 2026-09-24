@@ -87,4 +87,6 @@ Pour le port 465, utiliser généralement `SMTP_SECURE=true`. Pour le port 587, 
 
 La clé API est facultative pour faciliter le développement local. Ne pas exposer le service sur Internet sans `MAIL_API_KEY` : une API SMTP ouverte serait rapidement utilisée pour envoyer du spam.
 
+La configuration historique `ExhibitionHubLauncher/email.config.json` contient déjà les équivalents de `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS` et `MAIL_FROM`. Recopier ces valeurs uniquement dans le `.env` privé du serveur, jamais dans le dépôt.
+
 Pour lancer la validation : `npm run check`.
