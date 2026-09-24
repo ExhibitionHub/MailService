@@ -1,6 +1,9 @@
 import { timingSafeEqual } from "node:crypto";
 import cors from "cors";
 import express from "express";
+import { rateLimit } from "express-rate-limit";
+import helmet from "helmet";
+import { CapacityGate } from "./capacity.js";
 
 const EMAIL_PATTERN = /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/;
 const BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
@@ -21,10 +24,11 @@ function safeEqual(received, expected) {
 
 function authorization(config) {
   return (request, response, next) => {
-    if (!config.apiKey) return next();
+    const keys = config.apiKeys || (config.apiKey ? [config.apiKey] : []);
+    if (!keys.length) return next();
     const bearer = request.get("authorization")?.replace(/^Bearer\s+/i, "") || "";
     const key = request.get("x-api-key") || bearer;
-    if (!safeEqual(key, config.apiKey)) {
+    if (!keys.some((candidate) => safeEqual(key, candidate))) {
       return response.status(401).json({ error: "unauthorized", message: "Clé API absente ou invalide." });
     }
     return next();
@@ -95,50 +99,90 @@ function attachments(value, maxBytes) {
   });
 }
 
+function overloadProtection(gate) {
+  return async (_request, response, next) => {
+    try {
+      const release = await gate.acquire();
+      response.once("finish", release);
+      response.once("close", release);
+      next();
+    } catch (error) {
+      response.set("Retry-After", "5");
+      response.status(503).json({ error: error.code || "overloaded", message: error.message });
+    }
+  };
+}
+
+function mailLimiter(config) {
+  return rateLimit({
+    windowMs: config.rateLimitWindowMs,
+    limit: config.mailRateLimit,
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+    handler: (_request, response) => {
+      response.status(429).json({ error: "rate_limited", message: "Trop d'envois depuis cette adresse. Réessayez plus tard." });
+    },
+  });
+}
+
 export function createApp({ config, transporter }) {
   const app = express();
   app.disable("x-powered-by");
-  app.set("trust proxy", config.trustProxy);
+  app.set("trust proxy", config.trustProxyHops ? config.trustProxyHops : false);
+  app.use(helmet());
   app.use(cors(corsOptions(config.corsOrigins)));
-  app.use(express.json({ limit: `${Math.ceil(config.maxAttachmentBytes * 1.5 / 1024 / 1024) + 1}mb` }));
+  const sendGate = new CapacityGate({
+    maxActive: config.maxConcurrentSends,
+    maxQueued: config.maxQueuedSends,
+    waitTimeoutMs: config.sendQueueTimeoutMs,
+  });
 
   app.get("/health", (_request, response) => {
-    response.json({ status: "ok", service: "mail-service", smtpConfigured: true });
+    response.json({ status: "ok", service: "mail-service", smtpConfigured: true, sends: sendGate.stats() });
   });
 
-  app.post("/v1/emails", authorization(config), async (request, response, next) => {
-    try {
-      const body = request.body || {};
-      const to = emailList(body.to, "to", config.maxRecipients, { required: true });
-      const cc = emailList(body.cc, "cc", config.maxRecipients);
-      const bcc = emailList(body.bcc, "bcc", config.maxRecipients);
-      if (to.length + cc.length + bcc.length > config.maxRecipients) {
-        throw new RequestError("too_many_recipients", `Maximum ${config.maxRecipients} destinataires au total.`);
+  app.post(
+    "/v1/emails",
+    mailLimiter(config),
+    authorization(config),
+    overloadProtection(sendGate),
+    express.json({ limit: `${Math.ceil(config.maxAttachmentBytes * 1.5 / 1024 / 1024) + 1}mb` }),
+    async (request, response, next) => {
+      try {
+        const body = request.body || {};
+        const to = emailList(body.to, "to", config.maxRecipients, { required: true });
+        const cc = emailList(body.cc, "cc", config.maxRecipients);
+        const bcc = emailList(body.bcc, "bcc", config.maxRecipients);
+        if (to.length + cc.length + bcc.length > config.maxRecipients) {
+          throw new RequestError("too_many_recipients", `Maximum ${config.maxRecipients} destinataires au total.`);
+        }
+        const subject = requiredText(body.subject, "subject", 200);
+        const text = optionalText(body.text, "text", 100_000);
+        const html = optionalText(body.html, "html", 200_000);
+        if (!text && !html) throw new RequestError("invalid_request", "text ou html est obligatoire.");
+        const replyTo = body.replyTo ? email(body.replyTo, "replyTo") : undefined;
+        const files = attachments(body.attachments, config.maxAttachmentBytes);
+
+        const result = await transporter.sendMail({
+          from: { name: config.fromName, address: config.fromAddress },
+          to,
+          ...(cc.length ? { cc } : {}),
+          ...(bcc.length ? { bcc } : {}),
+          ...(replyTo ? { replyTo } : {}),
+          subject,
+          ...(text ? { text } : {}),
+          ...(html ? { html } : {}),
+          ...(files.length ? { attachments: files } : {}),
+          disableFileAccess: true,
+          disableUrlAccess: true,
+        });
+
+        response.status(202).json({ ok: true, messageId: result.messageId || null });
+      } catch (error) {
+        next(error);
       }
-      const subject = requiredText(body.subject, "subject", 200);
-      const text = optionalText(body.text, "text", 100_000);
-      const html = optionalText(body.html, "html", 200_000);
-      if (!text && !html) throw new RequestError("invalid_request", "text ou html est obligatoire.");
-      const replyTo = body.replyTo ? email(body.replyTo, "replyTo") : undefined;
-      const files = attachments(body.attachments, config.maxAttachmentBytes);
-
-      const result = await transporter.sendMail({
-        from: { name: config.fromName, address: config.fromAddress },
-        to,
-        ...(cc.length ? { cc } : {}),
-        ...(bcc.length ? { bcc } : {}),
-        ...(replyTo ? { replyTo } : {}),
-        subject,
-        ...(text ? { text } : {}),
-        ...(html ? { html } : {}),
-        ...(files.length ? { attachments: files } : {}),
-      });
-
-      response.status(202).json({ ok: true, messageId: result.messageId || null });
-    } catch (error) {
-      next(error);
-    }
-  });
+    },
+  );
 
   app.use((_request, response) => {
     response.status(404).json({ error: "not_found", message: "Route inconnue." });

@@ -14,11 +14,16 @@ function fixture() {
   const app = createApp({
     transporter,
     config: {
-      trustProxy: false,
+      trustProxyHops: 0,
       corsOrigins: "*",
-      apiKey: "test-key",
+      apiKeys: ["test-key"],
       maxAttachmentBytes: 1024,
       maxRecipients: 3,
+      rateLimitWindowMs: 60_000,
+      mailRateLimit: 10_000,
+      maxConcurrentSends: 3,
+      maxQueuedSends: 3,
+      sendQueueTimeoutMs: 1000,
       fromAddress: "no-reply@example.test",
       fromName: "Exhibition Hub",
     },
@@ -77,4 +82,41 @@ test("valide les destinataires et le contenu", async () => {
     .set("x-api-key", "test-key")
     .send({ to: "visitor@example.com", subject: "Test" })
     .expect(400);
+});
+
+test("refuse proprement une demande quand la capacité SMTP est atteinte", async () => {
+  let releaseFirst;
+  let notifyStarted;
+  const started = new Promise((resolve) => { notifyStarted = resolve; });
+  const transporter = {
+    async sendMail() {
+      notifyStarted();
+      return new Promise((resolve) => { releaseFirst = () => resolve({ messageId: "first" }); });
+    },
+  };
+  const app = createApp({
+    transporter,
+    config: {
+      trustProxyHops: 0,
+      corsOrigins: "*",
+      apiKeys: ["test-key"],
+      maxAttachmentBytes: 1024,
+      maxRecipients: 3,
+      rateLimitWindowMs: 60_000,
+      mailRateLimit: 10_000,
+      maxConcurrentSends: 1,
+      maxQueuedSends: 0,
+      sendQueueTimeoutMs: 1000,
+      fromAddress: "no-reply@example.test",
+      fromName: "Exhibition Hub",
+    },
+  });
+  const payload = { to: "visitor@example.com", subject: "Test", text: "Bonjour" };
+  const first = request(app).post("/v1/emails").set("x-api-key", "test-key").send(payload);
+  const firstResult = first.then((response) => response);
+  await started;
+  const overloaded = await request(app).post("/v1/emails").set("x-api-key", "test-key").send(payload).expect(503);
+  assert.equal(overloaded.body.error, "overloaded");
+  releaseFirst();
+  assert.equal((await firstResult).status, 202);
 });

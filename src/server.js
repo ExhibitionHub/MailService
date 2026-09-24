@@ -9,6 +9,10 @@ const app = createApp({ config, transporter });
 const server = app.listen(config.port, "0.0.0.0", () => {
   console.log(`MailService écoute sur http://0.0.0.0:${config.port}`);
 });
+server.requestTimeout = config.requestTimeoutMs;
+server.headersTimeout = Math.min(config.requestTimeoutMs, 15_000);
+server.keepAliveTimeout = 5_000;
+server.maxRequestsPerSocket = 1_000;
 
 function shutdown(signal) {
   console.log(`${signal} reçu, arrêt de MailService.`);

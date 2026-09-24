@@ -8,8 +8,11 @@ export function createTransporter(config) {
     requireTLS: config.smtp.requireTLS,
     tls: { rejectUnauthorized: config.smtp.rejectUnauthorized },
     pool: true,
-    maxConnections: 3,
+    maxConnections: config.smtp.poolConnections,
     maxMessages: 100,
+    connectionTimeout: config.smtp.connectionTimeoutMs,
+    greetingTimeout: config.smtp.connectionTimeoutMs,
+    socketTimeout: config.smtp.socketTimeoutMs,
   };
   if (config.smtp.user || config.smtp.pass) {
     if (!config.smtp.user || !config.smtp.pass) {

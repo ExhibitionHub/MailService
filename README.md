@@ -87,6 +87,22 @@ Pour le port 465, utiliser généralement `SMTP_SECURE=true`. Pour le port 587, 
 
 La clé API est facultative pour faciliter le développement local. Ne pas exposer le service sur Internet sans `MAIL_API_KEY` : une API SMTP ouverte serait rapidement utilisée pour envoyer du spam.
 
+En `NODE_ENV=production`, au moins une clé devient obligatoire. `MAIL_API_KEYS` accepte plusieurs clés séparées par des virgules, ce qui permet d'en attribuer une par site et de les renouveler progressivement.
+
+### Forte charge
+
+Le service protège le SMTP et sa mémoire avec :
+
+- une limite d'envois par adresse, avec réponse `429` ;
+- 10 envois simultanés et 200 demandes en attente maximum ;
+- une attente limitée à 5 secondes, puis réponse `503` avec `Retry-After` ;
+- un pool SMTP borné, des délais de connexion/socket et une taille maximale des pièces jointes ;
+- aucun téléchargement de pièce jointe depuis une URL ou un chemin local fourni par le client.
+
+Les valeurs sont réglables avec `MAIL_RATE_LIMIT`, `MAX_CONCURRENT_SENDS`, `MAX_QUEUED_SENDS`, `SEND_QUEUE_TIMEOUT_MS` et `SMTP_POOL_CONNECTIONS`. Les clients doivent réessayer avec temporisation exponentielle sur `429` et `503`.
+
+Pour plusieurs régions, déployer plusieurs instances derrière un load balancer et utiliser un fournisseur SMTP transactionnel dimensionné pour le débit attendu. La file est volontairement bornée et en mémoire : une réponse `202` signifie que le SMTP a accepté le message ; une réponse `503` n'est pas conservée et doit être réessayée. Les limites globales doivent également être appliquées au niveau du CDN ou du load balancer.
+
 La configuration historique `ExhibitionHubLauncher/email.config.json` contient déjà les équivalents de `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS` et `MAIL_FROM`. Recopier ces valeurs uniquement dans le `.env` privé du serveur, jamais dans le dépôt.
 
 Pour lancer la validation : `npm run check`.
